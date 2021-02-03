@@ -3,6 +3,12 @@ import ulab as np
 
 sensor.shutdown(True)
 
+##### UTIL #####
+def resetImage(img_path):
+    myImage = image.Image(imgPath, copy_to_fb = True)
+    myImage.to_grayscale(copy_to_fb=True)
+    return myImage
+
 ###### PREPROCESSING ######
 def calculateK(img):
     width = img.width()
@@ -72,7 +78,10 @@ def contrastEnhance(img, C, k):
 def preprocess(img_path, img):
     k = calculateK(img)
     C = calculateContrast(img_path, img)
+    del img
+    img = resetImage(img_path)
     contrastEnhance(img, C, k)
+    img = img.median(3)
 
 ###########################
 ##### MAIN #####
@@ -85,3 +94,4 @@ height = myImage.height()
 
 preprocess(imgPath, myImage)
 myImage.save("/contrasted.bmp")
+myImage = image.Image("/contrasted.bmp", copy_to_fb=True)
