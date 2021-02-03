@@ -1,13 +1,44 @@
-import image, sensor, framebuf, random, math
-import ulab as np
+import image, sensor, framebuf, time, random, math
+from ulab import numpy as np
 
 sensor.shutdown(True)
+
+##### MATH #####
+def addNum(img, num):
+    myImg = img.copy()
+    for x in range(myImg.width()):
+        for y in range(myImg.height()):
+            myImg.set_pixel(x, y, myImg.get_pixel()+num)
+    return myImg
 
 ##### UTIL #####
 def resetImage(img_path):
     myImage = image.Image(imgPath, copy_to_fb = True)
     myImage.to_grayscale(copy_to_fb=True)
     return myImage
+
+def ndarrayToImage(arr, doesCopy):
+    shape = arr.shape()
+    print(shape)
+    if len(shape) == 1:
+        width = shape[0]
+        height = 1
+    else:
+        height, width = shape
+    newImg = image.Image(width, height, sensor.GRAYSCALE, copy_to_fb=doesCopy)
+    newImg.to_grayscale(copy_to_fb=doesCopy)
+
+    if height==1:
+        for i in range(width):
+            newImg[i] = int(math.ceil(arr[i]))
+    else:
+        for x in range(width):
+            for y in range(height):
+                newImg.set_pixel(x, y, int(math.ceil(arr[y][x])))
+
+    sensor.flush()
+    time.sleep_ms(1000)
+    return newImg
 
 ###### PREPROCESSING ######
 def calculateK(img):
@@ -30,7 +61,9 @@ def calculateK(img):
             random.seed(randX * randY)
             randX = random.randint(sqSize, width - sqSize - 1)
             randY = random.randint(sqSize, height - sqSize - 1)
-            square = img.crop(roi=(randX, randY, sqSize, sqSize), copy=True)
+            #print(randX, randY)
+            #print(img)
+            square = img.copy(roi=(randX, randY, sqSize, sqSize), copy=False)
             maxVal = square.get_statistics().max()
             if (maxVal < minMax) and (maxVal > lowBound) and (maxVal < upBound):
                 minMax = maxVal
@@ -83,6 +116,81 @@ def preprocess(img_path, img):
     contrastEnhance(img, C, k)
     img = img.median(3)
 
+##### GRIDDING #####
+def getProjections(mat):
+    Hlines = np.mean(mat, axis=1)
+    Vlines = np.mean(mat, axis=0)
+    return (Hlines, Vlines)
+
+def calculateKernelSize(proj):
+    length = len(proj)
+
+    accum = 0
+    numNonZero = 0
+
+    wasZero = True
+    for i in range(length):
+        val = proj[i]
+        isNonZero = val > 0
+        if isNonZero: accum = accum+1
+        if not isNonZero and not wasZero: numNonZero = numNonZero+1
+        wasZero = not isNonZero
+
+    return math.ceil(accum/numNonZero)
+
+def getReconstruction(marker, mask, kernelSize):
+    size = math.max(2, math.min(kernelSize, 21))
+
+    m1 = marker.copy()
+    for i in range(15):
+        m0 = m1.copy()
+        m1.dilate(size).min(mask)
+        m0.difference(m1)
+        empty = True
+        for x in range(m0.width()):
+            if not empty: break
+            for y in range(m0.height()):
+                if m0.get_pixel(x,y)!=0:
+                    empty=False
+                    break
+
+        if empty: break
+
+    return m1
+
+def calculateSignals(projections, kernelSizes):
+    H, V = projections
+    kernelH, kernelV = kernelSizes
+    Hmean = H.get_statistics().mean()
+    Vmean = V.get_statistics().mean()
+    _H = addNum(H, Hmean)
+    _V = addNum(V, Vmean)
+    Hrec = getReconstruction(_H, H, kernelH)
+    Vrec = getReconstruction(_V, V, kernelV)
+
+    H_mark = H.copy().sub(Hrec)
+    V_mark = V.copy().sub(Vrec)
+
+    return (H_mark, V_mark)
+
+def getBinarySignals(signals):
+    Hsig, Vsig = signals
+
+
+def gridding(img):
+    mat = np.array(img, dtype=np.uint8)
+    Hlines, Vlines = getProjections(mat)
+
+    Hkernel = calculateKernelSize(Hlines)
+    Vkernel = calculateKernelSize(Vlines))
+
+    HlinesImg = ndarrayToImage(np.array(Hlines, dtype=np.uint8), False)
+    VlinesImg = ndarrayToImage(np.array(Vlines, dtype=np.uint8), False)
+
+    #lines = image.Image(newHline, copy_to_fb=False)
+    #lines.save("/lines.bmp")
+
+
 ###########################
 ##### MAIN #####
 imgPath = "/mysample.bmp"
@@ -94,4 +202,9 @@ height = myImage.height()
 
 preprocess(imgPath, myImage)
 myImage.save("/contrasted.bmp")
-myImage = image.Image("/contrasted.bmp", copy_to_fb=True)
+
+#myImage = resetImage(imgPath)
+newImg = gridding(myImage)
+
+
+newImg.save("/grid.bmp")
