@@ -128,68 +128,125 @@ def preprocess(img_path, img):
     img = resetImage(img_path)
     contrastEnhance(img, C, k)
     img = img.median(3)
-    return k
 
 ##### GRIDDING #####
-def circleHash(c):
-    string = str(c.x())+"-"+str(c.y())
-    return string
+def getProjections(mat):
+    Hlines = np.mean(mat, axis=1)
+    Vlines = np.mean(mat, axis=0)
+    return (Hlines, Vlines)
 
-def getCircles(img):
-    circles = []
-    width = img.width()
-    height = img.height()
-    totX = width // 100
-    totY = height // 100
+def calculateKernelSize(proj):
+    length = len(proj)
 
-    for x in range(totX):
-        for y in range(totY):
-            x1 = x*100
-            y1 = y*100
-            if x1<(width-100):
-                x2 = 200
-            else:
-                x2 = width-x1-1
-            if y1<(height-100):
-                y2 = 200
-            else:
-                y2 = height-y1-1
-            _roi=(x1,y1,x2,y2)
+    accum = 0
+    numNonZero = 0
 
-            circles = circles + img.find_circles(roi=_roi, r_max=12, x_margin=12, y_margin=12, r_margin=12)
+    wasZero = True
+    for i in range(length):
+        val = proj[i]
+        isNonZero = val > 0
+        if isNonZero: accum = accum+1
+        if not isNonZero and not wasZero: numNonZero = numNonZero+1
+        wasZero = not isNonZero
 
-    newCircles = []
-    newSet = set()
+    return math.ceil(accum/numNonZero)
 
-    for c in circles:
-        h = circleHash(c)
-        if h not in newSet:
-            newSet.add(h)
-            t_roi=(c.x()-c.r()+1, c.y()-c.r()+1, 2*(c.r()-1), 2*(c.r()-1))
-            print(t_roi)
-            print(img)
-            t_square=img.copy().crop(copy=True, roi=t_roi)
-            print(t_square)
-            if t_square.get_statistics().mean()>170:
-                newCircles.append(c)
-            del t_square
+def getReconstruction(marker, mask, kernelSize):
+    size = max(2, min(kernelSize, 21))
 
-    return newCircles
+    m1 = marker.copy()
+    for i in range(15):
+        m0 = m1.copy()
+        m1.dilate(size).min(mask)
+        m0.difference(m1)
+        empty = True
+        for x in range(m0.width()):
+            if not empty: break
+            for y in range(m0.height()):
+                if m0.get_pixel(x,y)!=0:
+                    empty=False
+                    break
 
-def getLines(img, circles, numRows, numCols):
-    minX=img.width()-1
-    maxX=0
-    minY=img.height()-1
-    maxY=0
+        if empty: break
 
-    for c in circles:
+    return m1
+
+def calculateSignals(projections, kernelSizes):
+    H, V = projections
+    kernelH, kernelV = kernelSizes
+    Hmean = H.get_statistics().mean()
+    Vmean = V.get_statistics().mean()
+
+    _H = addNum(H, -Hmean)
+    _V = addNum(V, -Vmean)
+
+    Hrec = getReconstruction(_H, H, kernelH)
+    Vrec = getReconstruction(_V, V, kernelV)
+
+    H_mark = H.copy().sub(Hrec)
+    V_mark = V.copy().sub(Vrec)
+
+    return (H_mark, V_mark)
+
+def getBinarySignals(signals):
+    Hsig, Vsig = signals
+    Hthresh = Hsig.get_histogram().get_threshold().value()
+    Vthresh = Vsig.get_histogram().get_threshold().value()
+
+    Hbin = Hsig.copy().binary([(0,Hthresh)], invert=True)
+    Vbin = Vsig.copy().binary([(0,Vthresh)], invert=True)
+    return (Hbin, Vbin)
+
+def getLines(binSig):
+    spot = []
+    lspot = []
+
+    flag = True
+    t = 0
+    for i in range(binSig.width()):
+        if flag:
+            if binSig.get_pixel(i, 0)>254:
+                spot.append(i)
+                flag = not flag
+                t = 0
+        else:
+            t = t+1
+            if t>4 and binSig.get_pixel(i,0)<1:
+                spot.append(i)
+                flag = not flag
+
+    lspot.append(spot[0])
+    for i in range(1,len(spot)-1, 2):
+        val = math.ceil((spot[i]+spot[i+1])/2)
+        lspot.append(val)
+
+    lspot.append(spot[len(spot)-1])
+
+    return lspot
+
+def adjustToDevice(img, lines):
 
 
 def gridding(img):
-    circles = getCircles(img)
-    for c in circles:
-        print(c)
-    print(len(circles))
+    mat = imgToArray(img)
+    Hproj, Vproj = getProjections(mat)
+
+    Hkernel = calculateKernelSize(Hproj)
+    Vkernel = calculateKernelSize(Vproj)
+
+    HlinesImg = ndarrayToImage(np.array(Hproj, dtype=np.uint8), False)
+    VlinesImg = ndarrayToImage(np.array(Vproj, dtype=np.uint8), False)
+
+    Hsig, Vsig = calculateSignals((HlinesImg, VlinesImg),(Hkernel, Vkernel))
+
+    Hbin, Vbin = getBinarySignals((Hsig, Vsig))
+
+    Hlines = getLines(Hbin)
+    Vlines = getLines(Vbin)
+
+    print(Hlines, Vlines)
+
+    return (Hbin, Vbin)
 
 ###########################
 ##### MAIN #####
@@ -201,13 +258,13 @@ myImage.to_grayscale(copy_to_fb=True)
 
 preprocess(imgPath, myImage)
 myImage.save("/contrasted.bmp")
-myImage.scale()
 gc.collect()
-print(gc.mem_free())
-sensor.flush()
+
+Htest, Vtest = gridding(myImage)
+
+#print(imgToArray(Htest), imgToArray(Vtest))
+
+Htest.save("/Htest.bmp")
+Vtest.save("/Vtest.bmp")
 time.sleep_ms(2000)
-
-gridding(myImage)
-
-
 
